@@ -8,6 +8,7 @@ package solr
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -23,6 +24,8 @@ import (
 type Connection struct {
 	URL     string
 	Version []int
+
+	basicAuth string
 }
 
 /*
@@ -101,6 +104,7 @@ type Query struct {
 	DefType    string
 	Debug      bool
 	OmitHeader bool
+	FL         string
 }
 
 /*
@@ -128,6 +132,10 @@ func (q *Query) String() string {
 
 	if q.DefType != "" {
 		s = append(s, fmt.Sprintf("defType=%s", q.DefType))
+	}
+
+	if q.FL != "" {
+		s = append(s, fmt.Sprintf("fl=%s", q.FL))
 	}
 
 	if q.Debug {
@@ -191,9 +199,20 @@ func (r UpdateResponse) String() string {
  * Performs a GET request to the given url
  * Returns a []byte containing the response body
  */
-func HTTPGet(httpUrl string) ([]byte, error) {
+func HTTPGet(httpUrl string, headers [][]string) ([]byte, error) {
+	// setup post client
+	client := &http.Client{}
+	req, err := http.NewRequest("GET", httpUrl, bytes.NewReader([]byte("")))
 
-	r, err := http.Get(httpUrl)
+	// add headers
+	if len(headers) > 0 {
+		for i := range headers {
+			req.Header.Add(headers[i][0], headers[i][1])
+		}
+	}
+
+	// perform request
+	r, err := client.Do(req)
 
 	if err != nil {
 		return nil, err
@@ -473,6 +492,25 @@ func Init(host string, port int, core string) (*Connection, error) {
 }
 
 /*
+ * Set basic authentication credential
+ */
+func (c *Connection) SetBasicAuth(user, password string) {
+	if user == "" || password == "" {
+		return
+	}
+
+	auth := base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", user, password)))
+	c.basicAuth = fmt.Sprintf("BASIC %s", auth)
+}
+
+func (c *Connection) getAuthHeader() [][]string {
+	if c.basicAuth == "" {
+		return nil
+	}
+	return [][]string{{"Authorization", c.basicAuth}}
+}
+
+/*
  * Performs a Select query given a Query
  */
 func (c *Connection) Select(q *Query) (*SelectResponse, error) {
@@ -484,7 +522,7 @@ func (c *Connection) Select(q *Query) (*SelectResponse, error) {
  * Performs a Select query given a Query and handlerName
  */
 func (c *Connection) CustomSelect(q *Query, handlerName string) (*SelectResponse, error) {
-	body, err := HTTPGet(SolrSelectString(c, q.String(), handlerName))
+	body, err := HTTPGet(SolrSelectString(c, q.String(), handlerName), c.getAuthHeader())
 
 	if err != nil {
 		return nil, err
@@ -511,7 +549,7 @@ func (c *Connection) SelectRaw(q string) (*SelectResponse, error) {
  * Performs a raw Select query given a raw query string and handlerName
  */
 func (c *Connection) CustomSelectRaw(q string, handlerName string) (*SelectResponse, error) {
-	body, err := HTTPGet(SolrSelectString(c, q, handlerName))
+	body, err := HTTPGet(SolrSelectString(c, q, handlerName), c.getAuthHeader())
 
 	if err != nil {
 		return nil, err
@@ -542,10 +580,16 @@ func (c *Connection) Update(m map[string]interface{}, commit bool) (*UpdateRespo
 		return nil, err
 	}
 
+	header := [][]string{{"Content-Type", "application/json"}}
+	authHeader := c.getAuthHeader()
+	if authHeader != nil {
+		header = append(header, authHeader...)
+	}
+
 	// perform request
 	resp, err := HTTPPost(
 		SolrUpdateString(c, commit),
-		[][]string{{"Content-Type", "application/json"}},
+		header,
 		payload)
 
 	if err != nil {
